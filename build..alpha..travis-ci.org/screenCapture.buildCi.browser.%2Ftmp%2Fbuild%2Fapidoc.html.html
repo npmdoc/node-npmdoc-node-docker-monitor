@@ -1,0 +1,216 @@
+<html><head></head><body><div class="apidocDiv">
+<style>
+/*csslint
+*/
+.apidocDiv {
+    background: #fff;
+    font-family: Arial, Helvetica, sans-serif;
+}
+.apidocDiv a[href] {
+    color: #33f;
+    font-weight: bold;
+    text-decoration: none;
+}
+.apidocDiv a[href]:hover {
+    text-decoration: underline;
+}
+.apidocCodeCommentSpan {
+    background: #bbf;
+    color: #000;
+    display: block;
+}
+.apidocCodeKeywordSpan {
+    color: #d00;
+    font-weight: bold;
+}
+.apidocCodePre {
+    background: #eef;
+    border: 1px solid;
+    color: #777;
+    padding: 5px;
+    white-space: pre-wrap;
+}
+.apidocFooterDiv {
+    margin-top: 20px;
+    text-align: center;
+}
+.apidocModuleLi {
+    margin-top: 10px;
+}
+.apidocSectionDiv {
+    border-top: 1px solid;
+    margin-top: 20px;
+}
+.apidocSignatureSpan {
+    color: #777;
+    font-weight: bold;
+}
+</style>
+<h1>api documentation for
+    <a href="https://github.com/Beh01der/node-docker-monitor">node-docker-monitor (v1.0.10)</a>
+</h1>
+<h4>Docker monitor helping to maintain list of running containers</h4>
+<div class="apidocSectionDiv"><a href="#apidoc.tableOfContents" id="apidoc.tableOfContents"><h1>table of contents</h1></a><ol>
+
+    <li class="apidocModuleLi"><a href="#apidoc.module.node-docker-monitor">module node-docker-monitor</a><ol>
+
+        <li>
+
+            <a class="apidocElementLiA" href="#apidoc.element.node-docker-monitor.node-docker-monitor">
+            function <span class="apidocSignatureSpan"></span>node-docker-monitor
+            <span class="apidocSignatureSpan">(handler, dockerOpts, opts)</span>
+            </a>
+
+        </li>
+
+    </ol></li>
+
+</ol></div>
+
+<div class="apidocSectionDiv">
+<h1><a href="#apidoc.module.node-docker-monitor" id="apidoc.module.node-docker-monitor">module node-docker-monitor</a></h1>
+
+
+    <h2>
+        <a href="#apidoc.element.node-docker-monitor.node-docker-monitor" id="apidoc.element.node-docker-monitor.node-docker-monitor">
+        function <span class="apidocSignatureSpan"></span>node-docker-monitor
+        <span class="apidocSignatureSpan">(handler, dockerOpts, opts)</span>
+        </a>
+    </h2>
+    <ul>
+    <li>description and source-code<pre class="apidocCodePre">node-docker-monitor = function (handler, dockerOpts, opts) {
+    var monitor = {
+        dataStream: null,
+        docker: null,
+        started: false,
+        stop: null
+    };
+
+    if (dockerOpts) {
+        if (dockerOpts.listContainers) {
+            monitor.docker = dockerOpts;
+        } else {
+            monitor.docker = new Docker(dockerOpts);
+        }
+    } else {
+        monitor.docker = new Docker({ socketPath: '/var/run/docker.sock' });
+    }
+
+    var monitorAll = !opts || opts.strategy !== 'monitorSelected';
+    var selectorLabel = opts &amp;&amp; opts.selectorLabel || 'node-docker-monitor';
+
+    var trackedEvents = ['create', 'restart', 'start', 'destroy', 'die', 'kill', 'stop'];
+    var positiveEvents = ['create', 'restart', 'start'];
+    var containerByName = new Map();
+    var containerById = new Map();
+
+    function getContainerName(names) {
+        for (i = 0; i &lt; names.length; i++) {
+            var nameElements = names[i].split('/');
+            if (nameElements.length === 2) {
+                return nameElements[1];
+            }
+        }
+    }
+
+    function updateContainer(info) {
+        var oldInfo = containerByName.get(info.Name);
+
+        var changed;
+        if (oldInfo) {
+            // existing service
+            if (oldInfo.Id !== info.Id) {
+                // existing service, new container
+                changed = true;
+                containerById.delete(oldInfo.Id);
+                containerByName.delete(oldInfo.Name);
+                handler.onContainerDown(oldInfo, monitor.docker);
+            }
+        } else {
+            // new service
+            changed = true;
+        }
+
+        if (changed) {
+            if (monitoringEnabled(info)) {
+                containerByName.set(info.Name, info);
+                containerById.set(info.Id, info);
+                handler.onContainerUp(info, monitor.docker);
+            }
+        }
+    }
+
+    function removeContainer(info) {
+        var oldInfo = containerByName.get(info.Name);
+        if (oldInfo) {
+            containerById.delete(oldInfo.Id);
+            containerByName.delete(oldInfo.Name);
+            handler.onContainerDown(oldInfo, monitor.docker);
+        }
+    }
+
+    var falseStrings = ['0', 'null', 'false', 'disable', 'disabled', ''];
+    function monitoringEnabled(info) {
+        if (monitorAll) {
+            // monitor all containers that don't have [selectorLabel]=false
+            return !info.Labels || info.Labels[selectorLabel] === undefined || falseStrings.indexOf(info.Labels[selectorLabel].toLocaleLowerCase
+()) === -1;
+        } else {
+            // monitor only containers that have [selectorLabel]=true
+            return info.Labels &amp;&amp; info.Labels[selectorLabel] !== undefined &amp;&amp; falseStrings.indexOf(info.Labels[selectorLabel].toLocaleLowerCase
+()) === -1;
+        }
+    }
+
+    // initially populate container map
+    function updateContainers(next) {
+        monitor.docker.listContainers(function (err, list) {
+            if (err) {
+                console.log('Error listing running containers: %s', err.message, err);
+                return next(err);
+            }
+
+            if (!monitor.started) {
+                if (handler.onMonitorStarted) {
+                    handler.onMonitorStarted(monitor, monitor.docker);
+                }
+                monitor.started = true;
+            }
+
+            list.forEach(function (it) {
+                var info = Object.clone(it);
+                info.Name = getContainerName(it.Names);
+
+                updateContainer(info)
+            });
+
+            next();
+        });
+    }
+
+    // start monitoring docker events
+    function processDockerEvent(event, stop) {
+        if (trackedEvents.indexOf(event.status) !== -1) {
+            var container = containerById.get(event.id);
+            if (container) {
+                if (positiveEvents.indexOf(event.status) !== -1) {
+                    updateContainer(container);
+                } else {
+                    removeContainer(container);
+                }
+            } else {
+                // new container
+                if (!stop &amp;&amp; positiveEvents.i ...</pre></li>
+    <li>example usage<pre class="apidocCodePre">n/a</pre></li>
+    </ul>
+
+
+</div>
+
+<div class="apidocFooterDiv">
+    [ this document was created with
+    <a href="https://github.com/kaizhu256/node-utility2" target="_blank">utility2</a>
+    ]
+</div>
+</div>
+</body></html>
